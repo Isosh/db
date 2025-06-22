@@ -75,6 +75,14 @@ PRIMARY_KEYS = {
     "sales_person": "business_entity_id"
 }
 
+MODULE_PREFIXES = {
+    "person": "person_",
+    "human_resources": "hr_",
+    "production": "prod_",
+    "purchasing": "purch_",
+    "sales": "sales_"
+}
+
 # Глобальные переменные для маппинга ID
 id_mappings = {}
 
