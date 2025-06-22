@@ -292,7 +292,7 @@ def migrate_person(pg_cur, mongo_db):
 
 
 def migrate_hr(pg_cur, mongo_db):
-    """Миграция модуля Human Resources"""
+    """Миграция модуля Human Resources""" 
     prefix = MODULE_PREFIXES["human_resources"]
     logger.info(f"Starting HR module migration with prefix: {prefix}")
 
