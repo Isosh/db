@@ -8,7 +8,6 @@ import logging
 import sys
 from decimal import Decimal
 
-# Настройка логгера
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -19,7 +18,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger()
 
-# Конфигурация
 PG_CONFIG = {
     "host": "212.67.13.83",
     "port": 5440,
@@ -32,7 +30,6 @@ MONGO_URI = "mongodb://root:rootpass@localhost:27017"
 MONGO_DB_NAME = "adventureworks"
 BATCH_SIZE = 1000
 
-# Префиксы для разделения по схемам
 MODULE_PREFIXES = {
     "person": "person_",
     "human_resources": "hr_",
@@ -41,7 +38,6 @@ MODULE_PREFIXES = {
     "sales": "sales_"
 }
 
-# Словарь соответствия имен первичных ключей
 PRIMARY_KEYS = {
     "address_type": "address_type_id",
     "contact_type": "contact_type_id",
@@ -83,7 +79,6 @@ MODULE_PREFIXES = {
     "sales": "sales_"
 }
 
-# Глобальные переменные для маппинга ID
 id_mappings = {}
 
 
@@ -93,7 +88,6 @@ def convert_value(value):
         if value is None:
             return None
 
-        # Обработка даты и времени
         if isinstance(value, datetime.datetime):
             return value
         if isinstance(value, date):
@@ -101,11 +95,9 @@ def convert_value(value):
         if isinstance(value, datetime.time):
             return value.isoformat()
 
-        # Обработка бинарных данных
         if isinstance(value, (bytes, bytearray, memoryview)):
             return Binary(bytes(value))
 
-        # Обработка специальных типов
         if isinstance(value, uuid.UUID):
             return str(value)
         if isinstance(value, Decimal):
@@ -120,7 +112,6 @@ def convert_value(value):
         return value
 
 
-# Инициализация счетчика ошибок для функции
 convert_value.error_count = 0
 
 
@@ -148,7 +139,6 @@ def migrate_person(pg_cur, mongo_db):
     prefix = MODULE_PREFIXES["person"]
     logger.info(f"Starting Person module migration with prefix: {prefix}")
 
-    # Миграция основных сущностей
     collections = [
         "address_type", "contact_type", "country_region",
         "state_province", "address", "business_entity", "phone_number_type"
@@ -158,10 +148,8 @@ def migrate_person(pg_cur, mongo_db):
         collection_name = f"{prefix}{col}"
         logger.info(f"Migrating {collection_name}")
 
-        # Очистка коллекции перед миграцией
         mongo_db[collection_name].delete_many({})
 
-        # Специальная обработка для address_type
         if col == "address_type":
             query = """
             SELECT 
@@ -188,7 +176,6 @@ def migrate_person(pg_cur, mongo_db):
             else:
                 logger.warning(f"Skipped ID mapping for {col} - primary key not found")
 
-    # Миграция Person с вложенными документами
     collection_name = f"{prefix}persons"
     logger.info(f"Migrating {collection_name} with nested data")
     persons = []
@@ -196,7 +183,6 @@ def migrate_person(pg_cur, mongo_db):
     for person in fetch_data(pg_cur, "SELECT * FROM person.person"):
         entity_id = person["business_entity_id"]
 
-        # Вложенные email
         emails = list(fetch_data(
             pg_cur,
             "SELECT * FROM person.email_address WHERE business_entity_id = %s",
@@ -204,7 +190,6 @@ def migrate_person(pg_cur, mongo_db):
         ))
         person["emails"] = emails
 
-        # Вложенные пароли
         passwords = list(fetch_data(
             pg_cur,
             "SELECT * FROM person.password WHERE business_entity_id = %s",
@@ -213,7 +198,6 @@ def migrate_person(pg_cur, mongo_db):
         if passwords:
             person["password"] = passwords[0]
 
-        # Вложенные телефоны
         phones = list(fetch_data(
             pg_cur,
             """
@@ -231,7 +215,6 @@ def migrate_person(pg_cur, mongo_db):
                 phone["phone_type"] = {"name": "Unknown"}
         person["phones"] = phones
 
-        # Вложенные кредитные карты
         credit_cards = list(fetch_data(
             pg_cur,
             """
@@ -247,7 +230,6 @@ def migrate_person(pg_cur, mongo_db):
         persons.append(person)
 
     if persons:
-        # Очистка перед вставкой
         mongo_db[collection_name].delete_many({})
         result = mongo_db[collection_name].insert_many(persons)
         id_mappings["person"] = {
@@ -255,10 +237,8 @@ def migrate_person(pg_cur, mongo_db):
         }
         logger.info(f"Migrated {len(persons)} persons to {collection_name}")
 
-    # Миграция связующих таблиц
     logger.info("Migrating entity addresses and contacts")
 
-    # BusinessEntityAddress
     collection_name = f"{prefix}business_entity_addresses"
     logger.info(f"Migrating {collection_name}")
     entity_addresses = []
@@ -273,7 +253,6 @@ def migrate_person(pg_cur, mongo_db):
         mongo_db[collection_name].insert_many(entity_addresses)
         logger.info(f"Migrated {len(entity_addresses)} entity addresses to {collection_name}")
 
-    # BusinessEntityContact
     collection_name = f"{prefix}business_entity_contacts"
     logger.info(f"Migrating {collection_name}")
     entity_contacts = []
@@ -296,13 +275,11 @@ def migrate_hr(pg_cur, mongo_db):
     prefix = MODULE_PREFIXES["human_resources"]
     logger.info(f"Starting HR module migration with prefix: {prefix}")
 
-    # Миграция справочников
     collections = ["department", "shift", "employee_pay_history", "employee_department_history"]
     for col in collections:
         collection_name = f"{prefix}{col}"
         logger.info(f"Migrating {collection_name}")
 
-        # Очистка коллекции
         mongo_db[collection_name].delete_many({})
 
         query = f"SELECT * FROM human_resources.{col}"
@@ -319,22 +296,18 @@ def migrate_hr(pg_cur, mongo_db):
             else:
                 logger.warning(f"Skipped ID mapping for {col} - primary key not found")
 
-    # Миграция сотрудников
     collection_name = f"{prefix}employees"
     logger.info(f"Migrating {collection_name} with nested data")
     employees = []
 
-    # Очистка коллекции
     mongo_db[collection_name].delete_many({})
 
     for emp in fetch_data(pg_cur, "SELECT * FROM human_resources.employee"):
         entity_id = emp["business_entity_id"]
 
-        # Ссылка на Person
         if "person" in id_mappings:
             emp["person_ref"] = id_mappings["person"].get(entity_id)
 
-        # Вложенная история зарплат
         pay_history = list(fetch_data(
             pg_cur,
             "SELECT * FROM human_resources.employee_pay_history WHERE business_entity_id = %s",
@@ -342,7 +315,6 @@ def migrate_hr(pg_cur, mongo_db):
         ))
         emp["pay_history"] = pay_history
 
-        # Вложенная история департаментов
         dept_history = []
         for hist in fetch_data(
                 pg_cur,
@@ -355,12 +327,10 @@ def migrate_hr(pg_cur, mongo_db):
                 """,
                 (entity_id,)
         ):
-            # Формируем вложенный документ для департамента
             dept_doc = {
                 "id": hist["department_id"],
                 "name": hist.pop("department_name")
             }
-            # Формируем вложенный документ для смены
             shift_doc = {
                 "name": hist.pop("shift_name")
             }
@@ -378,16 +348,13 @@ def migrate_hr(pg_cur, mongo_db):
         }
         logger.info(f"Migrated {len(employees)} employees to {collection_name}")
 
-    # Миграция кандидатов
     collection_name = f"{prefix}job_candidates"
     logger.info(f"Migrating {collection_name}")
     candidates = []
 
-    # Очистка коллекции
     mongo_db[collection_name].delete_many({})
 
     for cand in fetch_data(pg_cur, "SELECT * FROM human_resources.job_candidate"):
-        # Ссылка на сотрудника (если есть)
         if "employee" in id_mappings:
             cand["employee_ref"] = id_mappings["employee"].get(cand["business_entity_id"])
         candidates.append(cand)
@@ -404,7 +371,6 @@ def migrate_production(pg_cur, mongo_db):
     prefix = MODULE_PREFIXES["production"]
     logger.info(f"Starting Production module migration with prefix: {prefix}")
 
-    # Миграция справочников
     collections = [
         "culture", "location", "product_category", "product_subcategory",
         "product_description", "product_model", "product_photo", "scrap_reason",
@@ -418,7 +384,6 @@ def migrate_production(pg_cur, mongo_db):
         collection_name = f"{prefix}{col}"
         logger.info(f"Migrating {collection_name}")
 
-        # Очистка коллекции
         mongo_db[collection_name].delete_many({})
 
         query = f"SELECT * FROM production.{col}"
@@ -435,19 +400,16 @@ def migrate_production(pg_cur, mongo_db):
             else:
                 logger.warning(f"Skipped ID mapping for {col} - primary key not found")
 
-    # Миграция продуктов
     collection_name = f"{prefix}products"
     logger.info(f"Migrating {collection_name} with nested data")
     products = []
 
-    # Очистка коллекции
     mongo_db[collection_name].delete_many({})
 
     base_products = list(fetch_data(pg_cur, "SELECT * FROM production.product"))
     for prod in base_products:
         product_id = prod["product_id"]
 
-        # Вложенные фото продуктов
         product_photos = []
         for ppp in fetch_data(
                 pg_cur,
@@ -473,7 +435,6 @@ def migrate_production(pg_cur, mongo_db):
             product_photos.append(photo_doc)
         prod["photos"] = product_photos
 
-        # Вложенная история цен
         cost_history = list(fetch_data(
             pg_cur,
             "SELECT * FROM production.product_cost_history WHERE product_id = %s",
@@ -481,7 +442,6 @@ def migrate_production(pg_cur, mongo_db):
         ))
         prod["cost_history"] = cost_history
 
-        # Вложенная история цен
         price_history = list(fetch_data(
             pg_cur,
             "SELECT * FROM production.product_list_price_history WHERE product_id = %s",
@@ -489,7 +449,6 @@ def migrate_production(pg_cur, mongo_db):
         ))
         prod["price_history"] = price_history
 
-        # Вложенные отзывы
         reviews = list(fetch_data(
             pg_cur,
             "SELECT * FROM production.product_review WHERE product_id = %s",
@@ -497,7 +456,6 @@ def migrate_production(pg_cur, mongo_db):
         ))
         prod["reviews"] = reviews
 
-        # Ссылки на связанные документы
         if "product_model" in id_mappings:
             prod["product_model_ref"] = id_mappings["product_model"].get(prod["product_model_id"])
 
@@ -513,18 +471,15 @@ def migrate_production(pg_cur, mongo_db):
         }
         logger.info(f"Migrated {len(products)} products to {collection_name}")
 
-    # Миграция WorkOrder
     collection_name = f"{prefix}work_orders"
     logger.info(f"Migrating {collection_name} with routing")
     work_orders = []
 
-    # Очистка коллекции
     mongo_db[collection_name].delete_many({})
 
     for wo in fetch_data(pg_cur, "SELECT * FROM production.work_order"):
         order_id = wo["work_order_id"]
 
-        # Вложенные маршруты
         routings = list(fetch_data(
             pg_cur,
             """
@@ -544,7 +499,6 @@ def migrate_production(pg_cur, mongo_db):
 
         wo["routings"] = routings
 
-        # Ссылка на продукт
         if "product" in id_mappings:
             wo["product_ref"] = id_mappings["product"].get(wo["product_id"])
 
@@ -554,12 +508,10 @@ def migrate_production(pg_cur, mongo_db):
         mongo_db[collection_name].insert_many(work_orders)
         logger.info(f"Migrated {len(work_orders)} work orders to {collection_name}")
 
-    # Миграция BillOfMaterials
     collection_name = f"{prefix}bill_of_materials"
     logger.info(f"Migrating {collection_name}")
     bom_list = []
 
-    # Очистка коллекции
     mongo_db[collection_name].delete_many({})
 
     for bom in fetch_data(pg_cur, "SELECT * FROM production.bill_of_materials"):
@@ -580,13 +532,11 @@ def migrate_purchasing(pg_cur, mongo_db):
     prefix = MODULE_PREFIXES["purchasing"]
     logger.info(f"Starting Purchasing module migration with prefix: {prefix}")
 
-    # Миграция справочников
     collections = ["ship_method", "vendor", "product_vendor"]
     for col in collections:
         collection_name = f"{prefix}{col}"
         logger.info(f"Migrating {collection_name}")
 
-        # Очистка коллекции
         mongo_db[collection_name].delete_many({})
 
         query = f"SELECT * FROM purchasing.{col}"
@@ -603,26 +553,21 @@ def migrate_purchasing(pg_cur, mongo_db):
             else:
                 logger.warning(f"Skipped ID mapping for {col} - primary key not found")
 
-    # Миграция заказов
     collection_name = f"{prefix}purchase_orders"
     logger.info(f"Migrating {collection_name} with nested data")
     orders = []
 
-    # Очистка коллекции
     mongo_db[collection_name].delete_many({})
 
     for order in fetch_data(pg_cur, "SELECT * FROM purchasing.purchase_order_header"):
-        # Встроенный метод доставки
         if "ship_method" in id_mappings and "ship_method_id" in order:
             order["ship_method"] = id_mappings["ship_method"].get(order["ship_method_id"])
 
-        # Ссылки
         if "employee" in id_mappings:
             order["employee_ref"] = id_mappings["employee"].get(order["employee_id"])
         if "vendor" in id_mappings:
             order["vendor_ref"] = id_mappings["vendor"].get(order["vendor_id"])
 
-        # Вложенные детали заказа
         details = list(fetch_data(
             pg_cur,
             "SELECT * FROM purchasing.purchase_order_detail WHERE purchase_order_id = %s",
@@ -647,7 +592,6 @@ def migrate_sales(pg_cur, mongo_db):
     prefix = MODULE_PREFIXES["sales"]
     logger.info(f"Starting Sales module migration with prefix: {prefix}")
 
-    # Миграция справочников
     collections = [
         "credit_card", "currency", "sales_reason", "sales_tax_rate",
         "sales_territory", "special_offer", "country_region_currency",
@@ -660,7 +604,6 @@ def migrate_sales(pg_cur, mongo_db):
         collection_name = f"{prefix}{col}"
         logger.info(f"Migrating {collection_name}")
 
-        # Очистка коллекции
         mongo_db[collection_name].delete_many({})
 
         query = f"SELECT * FROM sales.{col}"
@@ -677,18 +620,15 @@ def migrate_sales(pg_cur, mongo_db):
             else:
                 logger.warning(f"Skipped ID mapping for {col} - primary key not found")
 
-    # Миграция SalesPerson с вложенными данными
     collection_name = f"{prefix}sales_persons"
     logger.info(f"Migrating {collection_name} with nested data")
     sales_persons = []
 
-    # Очистка коллекции
     mongo_db[collection_name].delete_many({})
 
     for sp in fetch_data(pg_cur, "SELECT * FROM sales.sales_person"):
         entity_id = sp["business_entity_id"]
 
-        # Вложенная история квот
         quota_history = list(fetch_data(
             pg_cur,
             "SELECT * FROM sales.sales_person_quota_history WHERE business_entity_id = %s",
@@ -696,7 +636,6 @@ def migrate_sales(pg_cur, mongo_db):
         ))
         sp["quota_history"] = quota_history
 
-        # Вложенная история территорий
         territory_history = list(fetch_data(
             pg_cur,
             """
@@ -723,16 +662,13 @@ def migrate_sales(pg_cur, mongo_db):
         }
         logger.info(f"Migrated {len(sales_persons)} sales persons to {collection_name}")
 
-    # Миграция заказов
     collection_name = f"{prefix}sales_orders"
     logger.info(f"Migrating {collection_name} with nested data")
     sales_orders = []
 
-    # Очистка коллекции
     mongo_db[collection_name].delete_many({})
 
     for order in fetch_data(pg_cur, "SELECT * FROM sales.sales_order_header"):
-        # Ссылки
         if "person" in id_mappings:
             order["customer_ref"] = id_mappings["person"].get(order["customer_id"])
         if "sales_person" in id_mappings:
@@ -740,7 +676,6 @@ def migrate_sales(pg_cur, mongo_db):
         if "credit_card" in id_mappings:
             order["credit_card_ref"] = id_mappings["credit_card"].get(order["credit_card_id"])
 
-        # Вложенные детали
         details = list(fetch_data(
             pg_cur,
             "SELECT * FROM sales.sales_order_detail WHERE sales_order_id = %s",
@@ -754,7 +689,6 @@ def migrate_sales(pg_cur, mongo_db):
 
         order["details"] = details
 
-        # Вложенные причины продажи
         sales_reasons = list(fetch_data(
             pg_cur,
             """
@@ -778,12 +712,10 @@ def migrate_sales(pg_cur, mongo_db):
         mongo_db[collection_name].insert_many(sales_orders)
         logger.info(f"Migrated {len(sales_orders)} sales orders to {collection_name}")
 
-    # Миграция клиентов
     collection_name = f"{prefix}customers"
     logger.info(f"Migrating {collection_name}")
     customers = []
 
-    # Очистка коллекции
     mongo_db[collection_name].delete_many({})
 
     for cust in fetch_data(pg_cur, "SELECT * FROM sales.customer"):
@@ -848,25 +780,21 @@ def main():
     try:
         logger.info("Starting migration process")
 
-        # Подключение к PostgreSQL
         pg_conn = psycopg2.connect(**PG_CONFIG)
         pg_cur = pg_conn.cursor()
 
-        # Подключение к MongoDB
         mongo_client = MongoClient(MONGO_URI)
         mongo_db = mongo_client[MONGO_DB_NAME]
 
         # Сброс счетчика ошибок конвертации
         convert_value.error_count = 0
 
-        # Последовательная миграция модулей
         migrate_person(pg_cur, mongo_db)
         migrate_hr(pg_cur, mongo_db)
         migrate_production(pg_cur, mongo_db)
         migrate_purchasing(pg_cur, mongo_db)
         migrate_sales(pg_cur, mongo_db)
 
-        # Финализация
         create_indexes(mongo_db)
         logger.info("Migration completed successfully")
 
