@@ -6,7 +6,7 @@ from datetime import date
 import uuid
 import logging
 import sys
-from decimal import Decimal  # Добавлен импорт Decimal
+from decimal import Decimal
 
 # Настройка логгера
 logging.basicConfig(
@@ -31,6 +31,15 @@ PG_CONFIG = {
 MONGO_URI = "mongodb://root:rootpass@localhost:27017"
 MONGO_DB_NAME = "adventureworks"
 BATCH_SIZE = 1000
+
+# Префиксы для разделения по схемам
+MODULE_PREFIXES = {
+    "person": "person_",
+    "human_resources": "hr_",
+    "production": "prod_",
+    "purchasing": "purch_",
+    "sales": "sales_"
+}
 
 # Словарь соответствия имен первичных ключей
 PRIMARY_KEYS = {
@@ -58,7 +67,12 @@ PRIMARY_KEYS = {
     "sales_reason": "sales_reason_id",
     "sales_tax_rate": "sales_tax_rate_id",
     "sales_territory": "territory_id",
-    "special_offer": "special_offer_id"
+    "special_offer": "special_offer_id",
+    "employee": "business_entity_id",
+    "person": "business_entity_id",
+    "job_candidate": "job_candidate_id",
+    "work_order": "work_order_id",
+    "sales_person": "business_entity_id"
 }
 
 # Глобальные переменные для маппинга ID
@@ -68,7 +82,6 @@ id_mappings = {}
 def convert_value(value):
     """Конвертация типов PostgreSQL в MongoDB-совместимые"""
     try:
-        # Пропускаем None значения
         if value is None:
             return None
 
@@ -93,7 +106,6 @@ def convert_value(value):
         return value
 
     except Exception as e:
-        # Логируем только первые 10 ошибок каждого типа
         if convert_value.error_count < 10:
             logger.error(f"Error converting value: {value} ({type(value)}) - {str(e)}")
             convert_value.error_count += 1
@@ -125,32 +137,52 @@ def fetch_data(pg_cur, query, params=None):
 
 def migrate_person(pg_cur, mongo_db):
     """Миграция модуля Person"""
-    logger.info("Starting Person module migration")
+    prefix = MODULE_PREFIXES["person"]
+    logger.info(f"Starting Person module migration with prefix: {prefix}")
 
     # Миграция основных сущностей
     collections = [
         "address_type", "contact_type", "country_region",
-        "state_province", "address", "business_entity"
+        "state_province", "address", "business_entity", "phone_number_type"
     ]
 
     for col in collections:
-        logger.info(f"Migrating {col}")
-        query = f"SELECT * FROM person.{col}"
+        collection_name = f"{prefix}{col}"
+        logger.info(f"Migrating {collection_name}")
+
+        # Очистка коллекции перед миграцией
+        mongo_db[collection_name].delete_many({})
+
+        # Специальная обработка для address_type
+        if col == "address_type":
+            query = """
+            SELECT 
+                address_type_id,
+                name,
+                row_guid::text AS row_guid,
+                modified_date
+            FROM person.address_type
+            """
+        else:
+            query = f"SELECT * FROM person.{col}"
+
         data = list(fetch_data(pg_cur, query))
+        logger.info(f"Found {len(data)} records for {collection_name}")
 
         if data:
-            result = mongo_db[col].insert_many(data)
+            result = mongo_db[collection_name].insert_many(data)
             pk_name = PRIMARY_KEYS.get(col)
 
             if pk_name and pk_name in data[0]:
                 id_mappings[col] = {d[pk_name]: id_
                                     for d, id_ in zip(data, result.inserted_ids)}
-                logger.info(f"Created ID mapping for {col} ({len(data)} records)")
+                logger.info(f"Created ID mapping for {collection_name} ({len(data)} records)")
             else:
                 logger.warning(f"Skipped ID mapping for {col} - primary key not found")
 
     # Миграция Person с вложенными документами
-    logger.info("Migrating persons with nested data")
+    collection_name = f"{prefix}persons"
+    logger.info(f"Migrating {collection_name} with nested data")
     persons = []
 
     for person in fetch_data(pg_cur, "SELECT * FROM person.person"):
@@ -185,75 +217,107 @@ def migrate_person(pg_cur, mongo_db):
             (entity_id,)
         ))
         for phone in phones:
-            # Убираем поле phone_type, если оно есть
             if "phone_type" in phone:
                 phone["phone_type"] = {"name": phone.pop("phone_type")}
             else:
                 phone["phone_type"] = {"name": "Unknown"}
         person["phones"] = phones
 
+        # Вложенные кредитные карты
+        credit_cards = list(fetch_data(
+            pg_cur,
+            """
+            SELECT pcc.*, cc.card_type, cc.card_number 
+            FROM sales.person_credit_card pcc
+            JOIN sales.credit_card cc ON pcc.credit_card_id = cc.credit_card_id
+            WHERE pcc.business_entity_id = %s
+            """,
+            (entity_id,)
+        ))
+        person["credit_cards"] = credit_cards
+
         persons.append(person)
 
     if persons:
-        result = mongo_db["persons"].insert_many(persons)
+        # Очистка перед вставкой
+        mongo_db[collection_name].delete_many({})
+        result = mongo_db[collection_name].insert_many(persons)
         id_mappings["person"] = {
             p["business_entity_id"]: id_ for p, id_ in zip(persons, result.inserted_ids)
         }
-        logger.info(f"Migrated {len(persons)} persons")
+        logger.info(f"Migrated {len(persons)} persons to {collection_name}")
 
     # Миграция связующих таблиц
     logger.info("Migrating entity addresses and contacts")
 
     # BusinessEntityAddress
+    collection_name = f"{prefix}business_entity_addresses"
+    logger.info(f"Migrating {collection_name}")
     entity_addresses = []
+
+    mongo_db[collection_name].delete_many({})
     for addr in fetch_data(pg_cur, "SELECT * FROM person.business_entity_address"):
         if "address" in id_mappings:
             addr["address_ref"] = id_mappings["address"].get(addr["address_id"])
         entity_addresses.append(addr)
 
     if entity_addresses:
-        mongo_db["business_entity_addresses"].insert_many(entity_addresses)
-        logger.info(f"Migrated {len(entity_addresses)} entity addresses")
+        mongo_db[collection_name].insert_many(entity_addresses)
+        logger.info(f"Migrated {len(entity_addresses)} entity addresses to {collection_name}")
 
     # BusinessEntityContact
+    collection_name = f"{prefix}business_entity_contacts"
+    logger.info(f"Migrating {collection_name}")
     entity_contacts = []
+
+    mongo_db[collection_name].delete_many({})
     for contact in fetch_data(pg_cur, "SELECT * FROM person.business_entity_contact"):
         if "person" in id_mappings:
             contact["person_ref"] = id_mappings["person"].get(contact["person_id"])
         entity_contacts.append(contact)
 
     if entity_contacts:
-        mongo_db["business_entity_contacts"].insert_many(entity_contacts)
-        logger.info(f"Migrated {len(entity_contacts)} entity contacts")
+        mongo_db[collection_name].insert_many(entity_contacts)
+        logger.info(f"Migrated {len(entity_contacts)} entity contacts to {collection_name}")
 
     logger.info("Person module completed")
 
 
 def migrate_hr(pg_cur, mongo_db):
     """Миграция модуля Human Resources"""
-    logger.info("Starting HR module migration")
+    prefix = MODULE_PREFIXES["human_resources"]
+    logger.info(f"Starting HR module migration with prefix: {prefix}")
 
     # Миграция справочников
-    collections = ["department", "shift"]
+    collections = ["department", "shift", "employee_pay_history", "employee_department_history"]
     for col in collections:
-        logger.info(f"Migrating {col}")
+        collection_name = f"{prefix}{col}"
+        logger.info(f"Migrating {collection_name}")
+
+        # Очистка коллекции
+        mongo_db[collection_name].delete_many({})
+
         query = f"SELECT * FROM human_resources.{col}"
         data = list(fetch_data(pg_cur, query))
 
         if data:
-            result = mongo_db[col].insert_many(data)
+            result = mongo_db[collection_name].insert_many(data)
             pk_name = PRIMARY_KEYS.get(col)
 
             if pk_name and pk_name in data[0]:
                 id_mappings[col] = {d[pk_name]: id_
                                     for d, id_ in zip(data, result.inserted_ids)}
-                logger.info(f"Created ID mapping for {col} ({len(data)} records)")
+                logger.info(f"Created ID mapping for {collection_name} ({len(data)} records)")
             else:
                 logger.warning(f"Skipped ID mapping for {col} - primary key not found")
 
     # Миграция сотрудников
-    logger.info("Migrating employees with nested data")
+    collection_name = f"{prefix}employees"
+    logger.info(f"Migrating {collection_name} with nested data")
     employees = []
+
+    # Очистка коллекции
+    mongo_db[collection_name].delete_many({})
 
     for emp in fetch_data(pg_cur, "SELECT * FROM human_resources.employee"):
         entity_id = emp["business_entity_id"]
@@ -300,15 +364,19 @@ def migrate_hr(pg_cur, mongo_db):
         employees.append(emp)
 
     if employees:
-        result = mongo_db["employees"].insert_many(employees)
+        result = mongo_db[collection_name].insert_many(employees)
         id_mappings["employee"] = {
             e["business_entity_id"]: id_ for e, id_ in zip(employees, result.inserted_ids)
         }
-        logger.info(f"Migrated {len(employees)} employees")
+        logger.info(f"Migrated {len(employees)} employees to {collection_name}")
 
     # Миграция кандидатов
-    logger.info("Migrating job candidates")
+    collection_name = f"{prefix}job_candidates"
+    logger.info(f"Migrating {collection_name}")
     candidates = []
+
+    # Очистка коллекции
+    mongo_db[collection_name].delete_many({})
 
     for cand in fetch_data(pg_cur, "SELECT * FROM human_resources.job_candidate"):
         # Ссылка на сотрудника (если есть)
@@ -317,50 +385,61 @@ def migrate_hr(pg_cur, mongo_db):
         candidates.append(cand)
 
     if candidates:
-        mongo_db["job_candidates"].insert_many(candidates)
-        logger.info(f"Migrated {len(candidates)} job candidates")
+        mongo_db[collection_name].insert_many(candidates)
+        logger.info(f"Migrated {len(candidates)} job candidates to {collection_name}")
 
     logger.info("HR module completed")
 
 
 def migrate_production(pg_cur, mongo_db):
-    """Миграция модуля Production с полной поддержкой вложенных отношений"""
-    logger.info("Starting Production module migration")
+    """Миграция модуля Production"""
+    prefix = MODULE_PREFIXES["production"]
+    logger.info(f"Starting Production module migration with prefix: {prefix}")
 
-    # 1. Миграция справочников и независимых коллекций
+    # Миграция справочников
     collections = [
-        "culture", "location", "product_category",
-        "product_description", "product_model", "product_photo",
-        "scrap_reason", "unit_measure", "illustration", "document"
+        "culture", "location", "product_category", "product_subcategory",
+        "product_description", "product_model", "product_photo", "scrap_reason",
+        "unit_measure", "illustration", "document", "transaction_history",
+        "transaction_history_archive", "product_review", "product_cost_history",
+        "product_list_price_history", "product_inventory", "product_document",
+        "product_model_illustration", "product_model_product_description_culture"
     ]
 
     for col in collections:
-        logger.info(f"Migrating {col}")
+        collection_name = f"{prefix}{col}"
+        logger.info(f"Migrating {collection_name}")
+
+        # Очистка коллекции
+        mongo_db[collection_name].delete_many({})
+
         query = f"SELECT * FROM production.{col}"
         data = list(fetch_data(pg_cur, query))
 
         if data:
-            result = mongo_db[col].insert_many(data)
+            result = mongo_db[collection_name].insert_many(data)
             pk_name = PRIMARY_KEYS.get(col, f"{col}_id")
 
             if pk_name in data[0]:
                 id_mappings[col] = {d[pk_name]: id_
                                     for d, id_ in zip(data, result.inserted_ids)}
-                logger.info(f"Created ID mapping for {col} ({len(data)} records)")
+                logger.info(f"Created ID mapping for {collection_name} ({len(data)} records)")
             else:
                 logger.warning(f"Skipped ID mapping for {col} - primary key not found")
 
-    # 2. Миграция продуктов с полной вложенной структурой
-    logger.info("Migrating products with complete nested structure")
+    # Миграция продуктов
+    collection_name = f"{prefix}products"
+    logger.info(f"Migrating {collection_name} with nested data")
     products = []
 
-    # Сначала получаем все продукты без вложенных данных
-    base_products = list(fetch_data(pg_cur, "SELECT * FROM production.product"))
+    # Очистка коллекции
+    mongo_db[collection_name].delete_many({})
 
+    base_products = list(fetch_data(pg_cur, "SELECT * FROM production.product"))
     for prod in base_products:
         product_id = prod["product_id"]
 
-        # Вложенные фото продуктов (embedded как в ERD)
+        # Вложенные фото продуктов
         product_photos = []
         for ppp in fetch_data(
                 pg_cur,
@@ -372,7 +451,6 @@ def migrate_production(pg_cur, mongo_db):
                 """,
                 (product_id,)
         ):
-            # Преобразуем в структуру как в ERD
             photo_doc = {
                 "product_photo": {
                     "product_photo_id": ppp["product_photo_id"],
@@ -385,10 +463,9 @@ def migrate_production(pg_cur, mongo_db):
                 "modified_date": ppp["modified_date"]
             }
             product_photos.append(photo_doc)
-
         prod["photos"] = product_photos
 
-        # Вложенная история цен (embedded)
+        # Вложенная история цен
         cost_history = list(fetch_data(
             pg_cur,
             "SELECT * FROM production.product_cost_history WHERE product_id = %s",
@@ -396,7 +473,7 @@ def migrate_production(pg_cur, mongo_db):
         ))
         prod["cost_history"] = cost_history
 
-        # Вложенная история цен (embedded)
+        # Вложенная история цен
         price_history = list(fetch_data(
             pg_cur,
             "SELECT * FROM production.product_list_price_history WHERE product_id = %s",
@@ -404,7 +481,7 @@ def migrate_production(pg_cur, mongo_db):
         ))
         prod["price_history"] = price_history
 
-        # Вложенные отзывы (embedded)
+        # Вложенные отзывы
         reviews = list(fetch_data(
             pg_cur,
             "SELECT * FROM production.product_review WHERE product_id = %s",
@@ -422,20 +499,24 @@ def migrate_production(pg_cur, mongo_db):
         products.append(prod)
 
     if products:
-        result = mongo_db["products"].insert_many(products)
+        result = mongo_db[collection_name].insert_many(products)
         id_mappings["product"] = {
             p["product_id"]: id_ for p, id_ in zip(products, result.inserted_ids)
         }
-        logger.info(f"Migrated {len(products)} products with nested data")
+        logger.info(f"Migrated {len(products)} products to {collection_name}")
 
-    # 3. Миграция WorkOrder с вложенными маршрутами
-    logger.info("Migrating work orders with routing")
+    # Миграция WorkOrder
+    collection_name = f"{prefix}work_orders"
+    logger.info(f"Migrating {collection_name} with routing")
     work_orders = []
+
+    # Очистка коллекции
+    mongo_db[collection_name].delete_many({})
 
     for wo in fetch_data(pg_cur, "SELECT * FROM production.work_order"):
         order_id = wo["work_order_id"]
 
-        # Вложенные маршруты (embedded как в ERD)
+        # Вложенные маршруты
         routings = list(fetch_data(
             pg_cur,
             """
@@ -447,7 +528,6 @@ def migrate_production(pg_cur, mongo_db):
             (order_id,)
         ))
 
-        # Преобразуем маршруты согласно ERD
         for routing in routings:
             routing["location"] = {
                 "location_id": routing["location_id"],
@@ -463,53 +543,65 @@ def migrate_production(pg_cur, mongo_db):
         work_orders.append(wo)
 
     if work_orders:
-        mongo_db["work_orders"].insert_many(work_orders)
-        logger.info(f"Migrated {len(work_orders)} work orders with routings")
+        mongo_db[collection_name].insert_many(work_orders)
+        logger.info(f"Migrated {len(work_orders)} work orders to {collection_name}")
 
-    # 4. Миграция BillOfMaterials
-    logger.info("Migrating bill of materials")
+    # Миграция BillOfMaterials
+    collection_name = f"{prefix}bill_of_materials"
+    logger.info(f"Migrating {collection_name}")
     bom_list = []
 
+    # Очистка коллекции
+    mongo_db[collection_name].delete_many({})
+
     for bom in fetch_data(pg_cur, "SELECT * FROM production.bill_of_materials"):
-        # Ссылки на продукты
         if "product" in id_mappings:
             bom["product_assembly_ref"] = id_mappings["product"].get(bom["product_assembly_id"])
             bom["component_ref"] = id_mappings["product"].get(bom["component_id"])
-
         bom_list.append(bom)
 
     if bom_list:
-        mongo_db["bill_of_materials"].insert_many(bom_list)
-        logger.info(f"Migrated {len(bom_list)} bill of materials records")
+        mongo_db[collection_name].insert_many(bom_list)
+        logger.info(f"Migrated {len(bom_list)} bill of materials records to {collection_name}")
 
     logger.info("Production module completed")
 
 
 def migrate_purchasing(pg_cur, mongo_db):
     """Миграция модуля Purchasing"""
-    logger.info("Starting Purchasing module migration")
+    prefix = MODULE_PREFIXES["purchasing"]
+    logger.info(f"Starting Purchasing module migration with prefix: {prefix}")
 
     # Миграция справочников
-    collections = ["ship_method", "vendor"]
+    collections = ["ship_method", "vendor", "product_vendor"]
     for col in collections:
-        logger.info(f"Migrating {col}")
+        collection_name = f"{prefix}{col}"
+        logger.info(f"Migrating {collection_name}")
+
+        # Очистка коллекции
+        mongo_db[collection_name].delete_many({})
+
         query = f"SELECT * FROM purchasing.{col}"
         data = list(fetch_data(pg_cur, query))
 
         if data:
-            result = mongo_db[col].insert_many(data)
+            result = mongo_db[collection_name].insert_many(data)
             pk_name = PRIMARY_KEYS.get(col)
 
             if pk_name and pk_name in data[0]:
                 id_mappings[col] = {d[pk_name]: id_
                                     for d, id_ in zip(data, result.inserted_ids)}
-                logger.info(f"Created ID mapping for {col} ({len(data)} records)")
+                logger.info(f"Created ID mapping for {collection_name} ({len(data)} records)")
             else:
                 logger.warning(f"Skipped ID mapping for {col} - primary key not found")
 
     # Миграция заказов
-    logger.info("Migrating purchase orders with nested data")
+    collection_name = f"{prefix}purchase_orders"
+    logger.info(f"Migrating {collection_name} with nested data")
     orders = []
+
+    # Очистка коллекции
+    mongo_db[collection_name].delete_many({})
 
     for order in fetch_data(pg_cur, "SELECT * FROM purchasing.purchase_order_header"):
         # Встроенный метод доставки
@@ -536,63 +628,107 @@ def migrate_purchasing(pg_cur, mongo_db):
         orders.append(order)
 
     if orders:
-        mongo_db["purchase_orders"].insert_many(orders)
-        logger.info(f"Migrated {len(orders)} purchase orders")
-
-    # Миграция ProductVendor
-    logger.info("Migrating product vendors")
-    product_vendors = []
-
-    for pv in fetch_data(pg_cur, "SELECT * FROM purchasing.product_vendor"):
-        if "product" in id_mappings:
-            pv["product_ref"] = id_mappings["product"].get(pv["product_id"])
-        if "vendor" in id_mappings:
-            pv["vendor_ref"] = id_mappings["vendor"].get(pv["business_entity_id"])
-        product_vendors.append(pv)
-
-    if product_vendors:
-        mongo_db["product_vendors"].insert_many(product_vendors)
-        logger.info(f"Migrated {len(product_vendors)} product vendors")
+        mongo_db[collection_name].insert_many(orders)
+        logger.info(f"Migrated {len(orders)} purchase orders to {collection_name}")
 
     logger.info("Purchasing module completed")
 
 
 def migrate_sales(pg_cur, mongo_db):
     """Миграция модуля Sales"""
-    logger.info("Starting Sales module migration")
+    prefix = MODULE_PREFIXES["sales"]
+    logger.info(f"Starting Sales module migration with prefix: {prefix}")
 
     # Миграция справочников
     collections = [
-        "credit_card", "currency", "sales_reason",
-        "sales_tax_rate", "sales_territory", "special_offer"
+        "credit_card", "currency", "sales_reason", "sales_tax_rate",
+        "sales_territory", "special_offer", "country_region_currency",
+        "currency_rate", "shopping_cart_item", "store", "sales_person",
+        "sales_person_quota_history", "sales_territory_history",
+        "special_offer_product", "sales_order_header_sales_reason"
     ]
 
     for col in collections:
-        logger.info(f"Migrating {col}")
+        collection_name = f"{prefix}{col}"
+        logger.info(f"Migrating {collection_name}")
+
+        # Очистка коллекции
+        mongo_db[collection_name].delete_many({})
+
         query = f"SELECT * FROM sales.{col}"
         data = list(fetch_data(pg_cur, query))
 
         if data:
-            result = mongo_db[col].insert_many(data)
+            result = mongo_db[collection_name].insert_many(data)
             pk_name = PRIMARY_KEYS.get(col)
 
             if pk_name and pk_name in data[0]:
                 id_mappings[col] = {d[pk_name]: id_
                                     for d, id_ in zip(data, result.inserted_ids)}
-                logger.info(f"Created ID mapping for {col} ({len(data)} records)")
+                logger.info(f"Created ID mapping for {collection_name} ({len(data)} records)")
             else:
                 logger.warning(f"Skipped ID mapping for {col} - primary key not found")
 
+    # Миграция SalesPerson с вложенными данными
+    collection_name = f"{prefix}sales_persons"
+    logger.info(f"Migrating {collection_name} with nested data")
+    sales_persons = []
+
+    # Очистка коллекции
+    mongo_db[collection_name].delete_many({})
+
+    for sp in fetch_data(pg_cur, "SELECT * FROM sales.sales_person"):
+        entity_id = sp["business_entity_id"]
+
+        # Вложенная история квот
+        quota_history = list(fetch_data(
+            pg_cur,
+            "SELECT * FROM sales.sales_person_quota_history WHERE business_entity_id = %s",
+            (entity_id,)
+        ))
+        sp["quota_history"] = quota_history
+
+        # Вложенная история территорий
+        territory_history = list(fetch_data(
+            pg_cur,
+            """
+            SELECT sth.*, st.name as territory_name
+            FROM sales.sales_territory_history sth
+            JOIN sales.sales_territory st ON sth.territory_id = st.territory_id
+            WHERE sth.business_entity_id = %s
+            """,
+            (entity_id,)
+        ))
+        for th in territory_history:
+            th["territory"] = {
+                "territory_id": th["territory_id"],
+                "name": th.pop("territory_name")
+            }
+        sp["territory_history"] = territory_history
+
+        sales_persons.append(sp)
+
+    if sales_persons:
+        result = mongo_db[collection_name].insert_many(sales_persons)
+        id_mappings["sales_person"] = {
+            sp["business_entity_id"]: id_ for sp, id_ in zip(sales_persons, result.inserted_ids)
+        }
+        logger.info(f"Migrated {len(sales_persons)} sales persons to {collection_name}")
+
     # Миграция заказов
-    logger.info("Migrating sales orders with nested data")
+    collection_name = f"{prefix}sales_orders"
+    logger.info(f"Migrating {collection_name} with nested data")
     sales_orders = []
+
+    # Очистка коллекции
+    mongo_db[collection_name].delete_many({})
 
     for order in fetch_data(pg_cur, "SELECT * FROM sales.sales_order_header"):
         # Ссылки
         if "person" in id_mappings:
             order["customer_ref"] = id_mappings["person"].get(order["customer_id"])
-        if "employee" in id_mappings:
-            order["sales_person_ref"] = id_mappings["employee"].get(order["sales_person_id"])
+        if "sales_person" in id_mappings:
+            order["sales_person_ref"] = id_mappings["sales_person"].get(order["sales_person_id"])
         if "credit_card" in id_mappings:
             order["credit_card_ref"] = id_mappings["credit_card"].get(order["credit_card_id"])
 
@@ -609,57 +745,96 @@ def migrate_sales(pg_cur, mongo_db):
                 detail["special_offer_ref"] = id_mappings["special_offer"].get(detail["special_offer_id"])
 
         order["details"] = details
+
+        # Вложенные причины продажи
+        sales_reasons = list(fetch_data(
+            pg_cur,
+            """
+            SELECT sohr.*, sr.name as reason_name
+            FROM sales.sales_order_header_sales_reason sohr
+            JOIN sales.sales_reason sr ON sohr.sales_reason_id = sr.sales_reason_id
+            WHERE sohr.sales_order_id = %s
+            """,
+            (order["sales_order_id"],)
+        ))
+        for reason in sales_reasons:
+            reason["reason"] = {
+                "sales_reason_id": reason["sales_reason_id"],
+                "name": reason.pop("reason_name")
+            }
+        order["sales_reasons"] = sales_reasons
+
         sales_orders.append(order)
 
     if sales_orders:
-        mongo_db["sales_orders"].insert_many(sales_orders)
-        logger.info(f"Migrated {len(sales_orders)} sales orders")
+        mongo_db[collection_name].insert_many(sales_orders)
+        logger.info(f"Migrated {len(sales_orders)} sales orders to {collection_name}")
 
     # Миграция клиентов
-    logger.info("Migrating customers")
+    collection_name = f"{prefix}customers"
+    logger.info(f"Migrating {collection_name}")
     customers = []
+
+    # Очистка коллекции
+    mongo_db[collection_name].delete_many({})
 
     for cust in fetch_data(pg_cur, "SELECT * FROM sales.customer"):
         if "person" in id_mappings:
             cust["person_ref"] = id_mappings["person"].get(cust["person_id"])
+        if "store" in id_mappings:
+            cust["store_ref"] = id_mappings["store"].get(cust["store_id"])
+        if "sales_territory" in id_mappings:
+            cust["territory_ref"] = id_mappings["sales_territory"].get(cust["territory_id"])
         customers.append(cust)
 
     if customers:
-        mongo_db["customers"].insert_many(customers)
-        logger.info(f"Migrated {len(customers)} customers")
+        mongo_db[collection_name].insert_many(customers)
+        logger.info(f"Migrated {len(customers)} customers to {collection_name}")
 
     logger.info("Sales module completed")
 
 
 def create_indexes(mongo_db):
     """Создание индексов после миграции"""
-    logger.info("Creating indexes")
+    logger.info("Creating indexes with prefixes")
 
     try:
         # Person
-        mongo_db.persons.create_index("business_entity_id")
-        mongo_db.business_entity_addresses.create_index("address_id")
+        mongo_db["person_persons"].create_index("business_entity_id")
+        mongo_db["person_business_entity_addresses"].create_index("address_id")
+        mongo_db["person_addresses"].create_index("state_province_id")
+        mongo_db["person_persons"].create_index("emails.email_address")
 
         # HR
-        mongo_db.employees.create_index("business_entity_id")
-        mongo_db.employees.create_index("department_history.department.id")
+        mongo_db["hr_employees"].create_index("business_entity_id")
+        mongo_db["hr_employees"].create_index("department_history.department.id")
+        mongo_db["hr_employees"].create_index("pay_history.rate_change_date")
 
         # Production
-        mongo_db.products.create_index("product_id")
-        mongo_db.products.create_index("product_subcategory_id")
+        mongo_db["prod_products"].create_index("product_id")
+        mongo_db["prod_products"].create_index("product_subcategory_id")
+        mongo_db["prod_products"].create_index("product_model_id")
+        mongo_db["prod_work_orders"].create_index("product_id")
+        mongo_db["prod_work_orders"].create_index("routings.location.location_id")
 
         # Purchasing
-        mongo_db.purchase_orders.create_index("vendor_id")
-        mongo_db.purchase_orders.create_index("details.product_id")
+        mongo_db["purch_purchase_orders"].create_index("vendor_id")
+        mongo_db["purch_purchase_orders"].create_index("employee_id")
+        mongo_db["purch_purchase_orders"].create_index("details.product_id")
 
         # Sales
-        mongo_db.sales_orders.create_index("customer_id")
-        mongo_db.sales_orders.create_index("sales_person_id")
-        mongo_db.sales_orders.create_index("details.product_id")
+        mongo_db["sales_sales_orders"].create_index("customer_id")
+        mongo_db["sales_sales_orders"].create_index("sales_person_id")
+        mongo_db["sales_sales_orders"].create_index("details.product_id")
+        mongo_db["sales_sales_orders"].create_index("credit_card_id")
+        mongo_db["sales_customers"].create_index("person_id")
+        mongo_db["sales_sales_persons"].create_index("territory_id")
+        mongo_db["sales_sales_persons"].create_index("quota_history.quota_date")
 
         logger.info("Indexes created successfully")
     except Exception as e:
         logger.error(f"Error creating indexes: {str(e)}")
+
 
 def main():
     try:
