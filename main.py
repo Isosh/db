@@ -813,7 +813,7 @@ def create_indexes(mongo_db):
         # Person
         mongo_db["person_persons"].create_index("business_entity_id")
         mongo_db["person_business_entity_addresses"].create_index("address_id")
-        mongo_db["person_addresses"].create_index("state_province_id")
+        mongo_db["person_address"].create_index("state_province_id")
         mongo_db["person_persons"].create_index("emails.email_address")
 
         # HR
