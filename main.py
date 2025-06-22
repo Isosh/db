@@ -147,7 +147,7 @@ def migrate_person(pg_cur, mongo_db):
         data = list(fetch_data(pg_cur, query))
 
         if data:
-            result = mongo_db[col].insert_many(data)
+            result = mongo_db[f"{MODULE_PREFIXES['person']}{col}"].insert_many(data)
             pk_name = PRIMARY_KEYS.get(col)
 
             if pk_name and pk_name in data[0]:
@@ -203,7 +203,7 @@ def migrate_person(pg_cur, mongo_db):
         persons.append(person)
 
     if persons:
-        result = mongo_db["persons"].insert_many(persons)
+        result = mongo_db[f"{MODULE_PREFIXES['person']}persons"].insert_many(persons)
         id_mappings["person"] = {
             p["business_entity_id"]: id_ for p, id_ in zip(persons, result.inserted_ids)
         }
@@ -220,7 +220,7 @@ def migrate_person(pg_cur, mongo_db):
         entity_addresses.append(addr)
 
     if entity_addresses:
-        mongo_db["business_entity_addresses"].insert_many(entity_addresses)
+        mongo_db[f"{MODULE_PREFIXES['person']}business_entity_addresses"].insert_many(entity_addresses)
         logger.info(f"Migrated {len(entity_addresses)} entity addresses")
 
     # BusinessEntityContact
@@ -231,7 +231,7 @@ def migrate_person(pg_cur, mongo_db):
         entity_contacts.append(contact)
 
     if entity_contacts:
-        mongo_db["business_entity_contacts"].insert_many(entity_contacts)
+        mongo_db[f"{MODULE_PREFIXES['person']}business_entity_contacts"].insert_many(entity_contacts)
         logger.info(f"Migrated {len(entity_contacts)} entity contacts")
 
     logger.info("Person module completed")
@@ -249,7 +249,7 @@ def migrate_hr(pg_cur, mongo_db):
         data = list(fetch_data(pg_cur, query))
 
         if data:
-            result = mongo_db[col].insert_many(data)
+            result = mongo_db[f"{MODULE_PREFIXES['human_resources']}{col}"].insert_many(data)
             pk_name = PRIMARY_KEYS.get(col)
 
             if pk_name and pk_name in data[0]:
@@ -308,7 +308,7 @@ def migrate_hr(pg_cur, mongo_db):
         employees.append(emp)
 
     if employees:
-        result = mongo_db["employees"].insert_many(employees)
+        result = mongo_db[f"{MODULE_PREFIXES['human_resources']}employees"].insert_many(employees)
         id_mappings["employee"] = {
             e["business_entity_id"]: id_ for e, id_ in zip(employees, result.inserted_ids)
         }
@@ -325,7 +325,7 @@ def migrate_hr(pg_cur, mongo_db):
         candidates.append(cand)
 
     if candidates:
-        mongo_db["job_candidates"].insert_many(candidates)
+        mongo_db[f"{MODULE_PREFIXES['human_resources']}job_candidates"].insert_many(candidates)
         logger.info(f"Migrated {len(candidates)} job candidates")
 
     logger.info("HR module completed")
@@ -348,7 +348,7 @@ def migrate_production(pg_cur, mongo_db):
         data = list(fetch_data(pg_cur, query))
 
         if data:
-            result = mongo_db[col].insert_many(data)
+            result = mongo_db[f"{MODULE_PREFIXES['production']}{col}"].insert_many(data)
             pk_name = PRIMARY_KEYS.get(col, f"{col}_id")
 
             if pk_name in data[0]:
@@ -430,7 +430,7 @@ def migrate_production(pg_cur, mongo_db):
         products.append(prod)
 
     if products:
-        result = mongo_db["products"].insert_many(products)
+        result = mongo_db[f"{MODULE_PREFIXES['production']}products"].insert_many(products)
         id_mappings["product"] = {
             p["product_id"]: id_ for p, id_ in zip(products, result.inserted_ids)
         }
@@ -471,7 +471,7 @@ def migrate_production(pg_cur, mongo_db):
         work_orders.append(wo)
 
     if work_orders:
-        mongo_db["work_orders"].insert_many(work_orders)
+        mongo_db[f"{MODULE_PREFIXES['production']}work_orders"].insert_many(work_orders)
         logger.info(f"Migrated {len(work_orders)} work orders with routings")
 
     # 4. Миграция BillOfMaterials
@@ -487,7 +487,7 @@ def migrate_production(pg_cur, mongo_db):
         bom_list.append(bom)
 
     if bom_list:
-        mongo_db["bill_of_materials"].insert_many(bom_list)
+        mongo_db[f"{MODULE_PREFIXES['production']}bill_of_materials"].insert_many(bom_list)
         logger.info(f"Migrated {len(bom_list)} bill of materials records")
 
     logger.info("Production module completed")
@@ -505,7 +505,7 @@ def migrate_purchasing(pg_cur, mongo_db):
         data = list(fetch_data(pg_cur, query))
 
         if data:
-            result = mongo_db[col].insert_many(data)
+            result = mongo_db[f"{MODULE_PREFIXES['purchasing']}{col}"].insert_many(data)
             pk_name = PRIMARY_KEYS.get(col)
 
             if pk_name and pk_name in data[0]:
@@ -544,7 +544,7 @@ def migrate_purchasing(pg_cur, mongo_db):
         orders.append(order)
 
     if orders:
-        mongo_db["purchase_orders"].insert_many(orders)
+        mongo_db[f"{MODULE_PREFIXES['purchasing']}purchase_orders"].insert_many(orders)
         logger.info(f"Migrated {len(orders)} purchase orders")
 
     # Миграция ProductVendor
@@ -559,7 +559,7 @@ def migrate_purchasing(pg_cur, mongo_db):
         product_vendors.append(pv)
 
     if product_vendors:
-        mongo_db["product_vendors"].insert_many(product_vendors)
+        mongo_db[f"{MODULE_PREFIXES['purchasing']}product_vendors"].insert_many(product_vendors)
         logger.info(f"Migrated {len(product_vendors)} product vendors")
 
     logger.info("Purchasing module completed")
@@ -581,7 +581,7 @@ def migrate_sales(pg_cur, mongo_db):
         data = list(fetch_data(pg_cur, query))
 
         if data:
-            result = mongo_db[col].insert_many(data)
+            result = mongo_db[f"{MODULE_PREFIXES['sales']}{col}"].insert_many(data)
             pk_name = PRIMARY_KEYS.get(col)
 
             if pk_name and pk_name in data[0]:
@@ -620,7 +620,7 @@ def migrate_sales(pg_cur, mongo_db):
         sales_orders.append(order)
 
     if sales_orders:
-        mongo_db["sales_orders"].insert_many(sales_orders)
+        mongo_db[f"{MODULE_PREFIXES['sales']}sales_orders"].insert_many(sales_orders)
         logger.info(f"Migrated {len(sales_orders)} sales orders")
 
     # Миграция клиентов
@@ -633,7 +633,7 @@ def migrate_sales(pg_cur, mongo_db):
         customers.append(cust)
 
     if customers:
-        mongo_db["customers"].insert_many(customers)
+        mongo_db[f"{MODULE_PREFIXES['sales']}customers"].insert_many(customers)
         logger.info(f"Migrated {len(customers)} customers")
 
     logger.info("Sales module completed")
@@ -645,25 +645,25 @@ def create_indexes(mongo_db):
 
     try:
         # Person
-        mongo_db.persons.create_index("business_entity_id")
-        mongo_db.business_entity_addresses.create_index("address_id")
+        mongo_db.person_persons.create_index("business_entity_id")
+        mongo_db.person_business_entity_addresses.create_index("address_id")
 
         # HR
-        mongo_db.employees.create_index("business_entity_id")
-        mongo_db.employees.create_index("department_history.department.id")
+        mongo_db.hr_employees.create_index("business_entity_id")
+        mongo_db.hr_employees.create_index("department_history.department.id")
 
         # Production
-        mongo_db.products.create_index("product_id")
-        mongo_db.products.create_index("product_subcategory_id")
+        mongo_db.prod_products.create_index("product_id")
+        mongo_db.prod_products.create_index("product_subcategory_id")
 
         # Purchasing
-        mongo_db.purchase_orders.create_index("vendor_id")
-        mongo_db.purchase_orders.create_index("details.product_id")
+        mongo_db.purch_purchase_orders.create_index("vendor_id")
+        mongo_db.purch_purchase_orders.create_index("details.product_id")
 
         # Sales
-        mongo_db.sales_orders.create_index("customer_id")
-        mongo_db.sales_orders.create_index("sales_person_id")
-        mongo_db.sales_orders.create_index("details.product_id")
+        mongo_db.sales_sales_orders.create_index("customer_id")
+        mongo_db.sales_sales_orders.create_index("sales_person_id")
+        mongo_db.sales_sales_orders.create_index("details.product_id")
 
         logger.info("Indexes created successfully")
     except Exception as e:
