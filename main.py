@@ -70,7 +70,9 @@ PRIMARY_KEYS = {
     "person": "business_entity_id",
     "job_candidate": "job_candidate_id",
     "work_order": "work_order_id",
-    "sales_person": "business_entity_id"
+    "sales_person": "business_entity_id",
+    "currency_rate": "currency_rate_id",
+    "shopping_cart_item": "shopping_cart_item_id",
 }
 
 MODULE_PREFIXES = {
@@ -527,7 +529,7 @@ def migrate_production(pg_conn, mongo_db):
     base_collections = [
         "culture", "location", "product_category",
         "product_description", "product_model",
-        "unit_measure", "illustration", "document", "scrap_reason"
+        "unit_measure", "illustration", "scrap_reason"
     ]
 
     with pg_conn.cursor() as pg_cur:
@@ -546,6 +548,27 @@ def migrate_production(pg_conn, mongo_db):
                     logger.info(f"Created ID mapping for {collection_name} ({len(data)} records)")
                 else:
                     logger.warning(f"Skipped ID mapping for {col} - primary key not found")
+
+        collection_name = f"{prefix}document"
+        logger.info(f"Migrating {collection_name} with employee references")
+        mongo_db[collection_name].delete_many({})
+        documents = []
+
+        for doc in fetch_data(pg_cur, "SELECT * FROM production.document"):
+            if "employee" in id_mappings and doc["owner"]:
+                doc["owner_ref"] = id_mappings["employee"].get(doc["owner"])
+            documents.append(doc)
+
+        if documents:
+            result = mongo_db[collection_name].insert_many(documents)
+            pk_name = PRIMARY_KEYS.get("document", "document_node")
+            if pk_name in documents[0]:
+                id_mappings["document"] = {
+                    d[pk_name]: id_ for d, id_ in zip(documents, result.inserted_ids)
+                }
+                logger.info(f"Created ID mapping for {collection_name} ({len(documents)} records)")
+            else:
+                logger.warning(f"Skipped ID mapping for document - primary key '{pk_name}' not found")
 
         collection_name = f"{prefix}product_subcategories"
         logger.info(f"Migrating {collection_name} with references")
@@ -775,15 +798,6 @@ def migrate_production(pg_conn, mongo_db):
             mongo_db[collection_name].insert_many(product_docs)
             logger.info(f"Migrated {len(product_docs)} product-document relationships")
 
-        if "document" in id_mappings and "employee" in id_mappings:
-            logger.info("Updating documents with owner references")
-            for doc in fetch_data(pg_cur, "SELECT document_node, owner FROM production.document"):
-                if doc["owner"]:
-                    mongo_db["production_document"].update_one(
-                        {"_id": id_mappings["document"].get(doc["document_node"])},
-                        {"$set": {"owner_ref": id_mappings["employee"].get(doc["owner"])}}
-                    )
-
         logger.info("Production module completed")
 
 
@@ -798,7 +812,7 @@ def migrate_sales(pg_conn, mongo_db):
 
     base_collections = [
         "credit_card", "currency", "currency_rate",
-        "shopping_cart_item", "sales_reason",
+        "sales_reason",
         "sales_territory", "special_offer"
     ]
 
@@ -840,7 +854,26 @@ def migrate_sales(pg_conn, mongo_db):
                         {"_id": id_mappings["sales_territory"][territory_id]},
                         {"$set": {"country_region_ref": id_mappings["country_region"][country_code]}}
                     )
+        collection_name = f"{prefix}shopping_cart_item"
+        logger.info(f"Migrating {collection_name} with product references")
+        mongo_db[collection_name].delete_many({})
+        shopping_cart_items = []
 
+        for item in fetch_data(pg_cur, "SELECT * FROM sales.shopping_cart_item"):
+            if "product" in id_mappings and item.get("product_id"):
+                item["product_ref"] = id_mappings["product"].get(item["product_id"])
+            shopping_cart_items.append(item)
+
+        if shopping_cart_items:
+            result = mongo_db[collection_name].insert_many(shopping_cart_items)
+            pk_name = PRIMARY_KEYS.get("shopping_cart_item")
+            if pk_name and pk_name in shopping_cart_items[0]:
+                id_mappings["shopping_cart_item"] = {
+                    d[pk_name]: id_ for d, id_ in zip(shopping_cart_items, result.inserted_ids)
+                }
+                logger.info(f"Created ID mapping for {collection_name} ({len(shopping_cart_items)} records)")
+            else:
+                logger.warning("Skipped ID mapping for shopping_cart_item - primary key not found")
         collection_name = f"{prefix}stores"
         logger.info(f"Migrating {collection_name} with references")
         stores = []
@@ -978,15 +1011,6 @@ def migrate_sales(pg_conn, mongo_db):
         if order_details:
             mongo_db[detail_collection].insert_many(order_details)
             logger.info(f"Migrated {len(order_details)} sales order details")
-
-        if "shopping_cart_item" in id_mappings and "product" in id_mappings:
-            logger.info("Updating shopping cart items with product references")
-            for item in fetch_data(pg_cur, "SELECT shopping_cart_item_id, product_id FROM sales.shopping_cart_item"):
-                if item["product_id"]:
-                    mongo_db["sales_shopping_cart_item"].update_one(
-                        {"_id": id_mappings["shopping_cart_item"].get(item["shopping_cart_item_id"])},
-                        {"$set": {"product_ref": id_mappings["product"].get(item["product_id"])}}
-                    )
 
         logger.info("Sales module completed")
 
